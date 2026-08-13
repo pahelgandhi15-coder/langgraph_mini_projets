@@ -9,3 +9,4 @@ class SupportState(TypedDict):
     summary: str
     confidence: float
     response: str
+    human_decision: str
