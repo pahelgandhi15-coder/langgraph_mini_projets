@@ -1,26 +1,54 @@
 import os
+import uuid
+
 from dotenv import load_dotenv
+
 from langgraph.graph import StateGraph, START, END
-from langchain_groq import ChatGroq
-from langgraph.types import interrupt,Command
+from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
+
+from langchain_groq import ChatGroq
 
 from graph.state import SupportState
 from graph.schemas import TicketClassification
 
+
+# ==========================================
+# LOAD ENVIRONMENT
+# ==========================================
+
 load_dotenv()
 
-llm=ChatGroq(
+
+# ==========================================
+# LLM SETUP
+# ==========================================
+
+llm = ChatGroq(
     model="llama-3.1-8b-instant",
     temperature=0
 )
 
-structured_llm=llm.with_structured_output(TicketClassification)
-CONFIDENCE_THRESHOLD = 0.95
+structured_llm = llm.with_structured_output(
+    TicketClassification
+)
 
-#intake node
+
+# ==========================================
+# CONFIDENCE THRESHOLD
+# ==========================================
+
+CONFIDENCE_THRESHOLD = 0.75
+
+
+# ==========================================
+# INTAKE NODE
+# ==========================================
+
 def intake_node(state: SupportState):
-    ticket=state["ticket"]
+
+    ticket = state["ticket"]
+
     prompt = f"""
 You are a customer support ticket classifier.
 
@@ -45,10 +73,16 @@ Also identify:
 - language
 - short summary
 - confidence between 0 and 1
+
+Return only the structured classification.
 """
-    result=structured_llm.invoke(prompt)
+
+    result = structured_llm.invoke(prompt)
+
+    print("\n--- INTAKE CLASSIFICATION ---")
     print(result)
-    return{
+
+    return {
         "category": result.category,
         "urgency": result.urgency,
         "language": result.language,
@@ -57,9 +91,14 @@ Also identify:
     }
 
 
-#specialist nodes
+# ==========================================
+# TECHNICAL SPECIALIST
+# ==========================================
+
 def technical_node(state: SupportState):
-    print("\nTECHNICAL SPECIALIST")
+
+    print("\n--- TECHNICAL SPECIALIST ---")
+
     prompt = f"""
 You are a technical customer support specialist.
 
@@ -80,13 +119,22 @@ Rules:
 - Give practical troubleshooting steps when appropriate.
 - If you do not have enough information, ask the customer for the missing information.
 """
+
     response = llm.invoke(prompt)
+
     return {
         "response": response.content
     }
 
+
+# ==========================================
+# BILLING SPECIALIST
+# ==========================================
+
 def billing_node(state: SupportState):
-    print("\nBILLING SPECIALIST")
+
+    print("\n--- BILLING SPECIALIST ---")
+
     prompt = f"""
 You are a billing customer support specialist.
 
@@ -108,14 +156,23 @@ Rules:
 - Do not invent transaction information.
 - Explain what the customer should do next.
 """
+
     response = llm.invoke(prompt)
+
     return {
         "response": response.content
     }
 
+
+# ==========================================
+# GENERAL SPECIALIST
+# ==========================================
+
 def general_node(state: SupportState):
-   print("\nGENERAL SUPPORT SPECIALIST")
-   prompt = f"""
+
+    print("\n--- GENERAL SUPPORT SPECIALIST ---")
+
+    prompt = f"""
 You are a general customer support specialist.
 
 Customer ticket:
@@ -135,27 +192,69 @@ Rules:
 - Keep the response concise.
 - If information is missing, ask an appropriate follow-up question.
 """
-   response = llm.invoke(prompt)
-   return {
+
+    response = llm.invoke(prompt)
+
+    return {
         "response": response.content
     }
 
-#confidence check
-def check_confidence_node(state:SupportState):
-    confidence=state["confidence"]
+
+# ==========================================
+# CATEGORY ROUTING
+# ==========================================
+
+def route_tickets(state: SupportState):
+
+    category = state["category"]
+
+    if category == "technical":
+        return "technical"
+
+    elif category == "billing":
+        return "billing"
+
+    else:
+        return "general"
+
+
+# ==========================================
+# CONFIDENCE CHECK NODE
+# ==========================================
+
+def confidence_check_node(state: SupportState):
+
+    confidence = state["confidence"]
+
+    print("\n--- CONFIDENCE CHECK ---")
+    print(f"Confidence: {confidence}")
+    print(f"Threshold: {CONFIDENCE_THRESHOLD}")
+
     return {}
 
-#confidence routing
+
+# ==========================================
+# CONFIDENCE ROUTING
+# ==========================================
+
 def route_by_confidence(state: SupportState):
+
     confidence = state["confidence"]
+
     if confidence >= CONFIDENCE_THRESHOLD:
         return "confident"
+
     return "uncertain"
 
-#human review node
+
+# ==========================================
+# HUMAN REVIEW NODE
+# ==========================================
+
 def human_review_node(state: SupportState):
 
-    print("\nHUMAN REVIEW REQUIRED")
+    print("\n--- HUMAN REVIEW REQUIRED ---")
+
     decision = interrupt({
         "message": "Please review this customer support ticket.",
         "ticket": state["ticket"],
@@ -163,48 +262,173 @@ def human_review_node(state: SupportState):
         "urgency": state["urgency"],
         "summary": state["summary"],
         "confidence": state["confidence"],
+        "suggested_response": state["response"],
     })
+
     return {
-        "response": decision
+        "human_decision": decision
     }
 
 
+# ==========================================
+# HUMAN DECISION ROUTING
+# ==========================================
+
 def route_human_decision(state: SupportState):
+
     decision = state["human_decision"].lower().strip()
+
     if "approve" in decision:
         return "approve"
+
     elif "reject" in decision:
         return "reject"
+
     elif "edit" in decision:
         return "edit"
+
     else:
         return "reject"
 
 
-    
-#routing funcs
-def route_tickets(state:SupportState):
-    category=state["category"]
-    if category=="technical":
-        return "technical"
-    elif category=="billing":
-        return "billing"
-    else:
-        return "general"
+# ==========================================
+# APPROVE NODE
+# ==========================================
+
+def approve_node(state: SupportState):
+
+    print("\n--- RESPONSE APPROVED ---")
+
+    return {
+        "response": state["response"]
+    }
 
 
+# ==========================================
+# REJECT NODE
+# ==========================================
 
-    
+def reject_node(state: SupportState):
+
+    print("\n--- RESPONSE REJECTED ---")
+
+    return {
+        "response": (
+            "Your request requires further investigation "
+            "by our support team."
+        )
+    }
+
+
+# ==========================================
+# EDIT / REGENERATE NODE
+# ==========================================
+
+def edit_node(state: SupportState):
+
+    print("\n--- REGENERATING RESPONSE ---")
+
+    prompt = f"""
+You are a customer support quality specialist.
+
+Customer ticket:
+{state["ticket"]}
+
+Current support response:
+{state["response"]}
+
+The human reviewer requested an improved response.
+
+Rewrite the response so that it is:
+
+- Clear
+- Helpful
+- Professional
+- Concise
+- Accurate
+- Based only on the information available
+
+Do not invent information.
+"""
+
+    response = llm.invoke(prompt)
+
+    return {
+        "response": response.content
+    }
+
+
+# ==========================================
+# BUILD GRAPH
+# ==========================================
+
 graph_builder = StateGraph(SupportState)
 
-graph_builder.add_node("intake", intake_node)
-graph_builder.add_node("technical", technical_node)
-graph_builder.add_node("billing", billing_node)
-graph_builder.add_node("general", general_node)
-graph_builder.add_node("confidence_check", check_confidence_node)
-graph_builder.add_node("human_review", human_review_node)
 
-graph_builder.add_edge(START,"intake")
+# ==========================================
+# ADD NODES
+# ==========================================
+
+graph_builder.add_node(
+    "intake",
+    intake_node
+)
+
+graph_builder.add_node(
+    "technical",
+    technical_node
+)
+
+graph_builder.add_node(
+    "billing",
+    billing_node
+)
+
+graph_builder.add_node(
+    "general",
+    general_node
+)
+
+graph_builder.add_node(
+    "confidence_check",
+    confidence_check_node
+)
+
+graph_builder.add_node(
+    "human_review",
+    human_review_node
+)
+
+graph_builder.add_node(
+    "approve",
+    approve_node
+)
+
+graph_builder.add_node(
+    "reject",
+    reject_node
+)
+
+graph_builder.add_node(
+    "edit",
+    edit_node
+)
+
+
+# ==========================================
+# START → INTAKE
+# ==========================================
+
+graph_builder.add_edge(
+    START,
+    "intake"
+)
+
+
+# ==========================================
+# INTAKE → SPECIALIST
+# ==========================================
+
 graph_builder.add_conditional_edges(
     "intake",
     route_tickets,
@@ -215,9 +439,30 @@ graph_builder.add_conditional_edges(
     }
 )
 
-graph_builder.add_edge("technical","confidence_check")
-graph_builder.add_edge("billing", "confidence_check")
-graph_builder.add_edge("general", "confidence_check")
+
+# ==========================================
+# SPECIALIST → CONFIDENCE CHECK
+# ==========================================
+
+graph_builder.add_edge(
+    "technical",
+    "confidence_check"
+)
+
+graph_builder.add_edge(
+    "billing",
+    "confidence_check"
+)
+
+graph_builder.add_edge(
+    "general",
+    "confidence_check"
+)
+
+
+# ==========================================
+# CONFIDENCE → END / HUMAN REVIEW
+# ==========================================
 
 graph_builder.add_conditional_edges(
     "confidence_check",
@@ -227,60 +472,185 @@ graph_builder.add_conditional_edges(
         "uncertain": "human_review",
     }
 )
-graph_builder.add_edge(
+
+
+# ==========================================
+# HUMAN REVIEW → DECISION
+# ==========================================
+
+graph_builder.add_conditional_edges(
     "human_review",
+    route_human_decision,
+    {
+        "approve": "approve",
+        "reject": "reject",
+        "edit": "edit",
+    }
+)
+
+
+# ==========================================
+# DECISION → END
+# ==========================================
+
+graph_builder.add_edge(
+    "approve",
     END
 )
+
+graph_builder.add_edge(
+    "reject",
+    END
+)
+
+graph_builder.add_edge(
+    "edit",
+    END
+)
+
+
+# ==========================================
+# CHECKPOINTING
+# ==========================================
+
 checkpointer = InMemorySaver()
+
+
+# ==========================================
+# COMPILE GRAPH
+# ==========================================
 
 graph = graph_builder.compile(
     checkpointer=checkpointer
 )
 
-initial_state = {
-    "ticket": "The application crashes whenever I try to upload a PDF.",
-    "category": "",
-    "urgency": "",
-    "language": "",
-    "summary": "",
-    "confidence": 0.0,
-    "response": "",
-    "human_decision":"",
-}
+# def get_ticket():
 
-#thred config
-config = {
-    "configurable": {
-        "thread_id": "ticket-001"
-    }
-}
+#     print("   CUSTOMER SUPPORT TRIAGE SYSTEM")
+#     ticket = input(
+#         "Enter customer support ticket:\n> "
+#     ).strip()
 
-#first graph invocation
-result = graph.invoke(
-    initial_state,
-    config=config
-)
+#     while not ticket:
+#         print("\nTicket cannot be empty.")
+#         ticket = input(
+#             "Enter customer support ticket:\n> "
+#         ).strip()
 
-print("\nGRAPH PAUSED / FINISHED")
-print(result)
-current_state = graph.get_state(config)
-print("\nCURRENT STATE")
-print(current_state)
+#     return ticket
 
-#human resume
-if current_state.next:
-    print("\nThe graph is waiting for human review.")
-    human_decision = input(
-        "\nEnter human decision: "
-    )
-    result = graph.invoke(
-        Command(
-            resume=human_decision
-        ),
-        config=config
-    )
-    print("\n--- FINAL STATE ---")
-    print(result)
+# MAIN
 
-else:
-    print("\nGraph completed without human review.")
+# ticket = get_ticket()
+
+# # INITIAL STATE
+# initial_state = {
+#     "ticket": ticket,
+#     "category": "",
+#     "urgency": "",
+#     "language": "",
+#     "summary": "",
+#     "confidence": 0.0,
+#     "response": "",
+#     "human_decision": "",
+# }
+
+# # UNIQUE THREAD ID
+
+# config = {
+#     "configurable": {
+#         "thread_id": str(uuid.uuid4())
+#     }
+# }
+
+# # FIRST GRAPH INVOCATION
+
+# try:
+#     result = graph.invoke(
+#         initial_state,
+#         config=config
+#     )
+
+# except Exception as e:
+
+#     print("              ERROR")
+#     print(e)
+#     raise
+
+# # CHECK GRAPH STATE
+# current_state = graph.get_state(config)
+
+
+# # HUMAN REVIEW
+# if current_state.next:
+#     print("        HUMAN REVIEW REQUIRED")
+
+#     print("\nTicket:")
+#     print(current_state.values["ticket"])
+
+#     print("\nCategory:")
+#     print(current_state.values["category"])
+
+#     print("\nUrgency:")
+#     print(current_state.values["urgency"])
+
+#     print("\nSummary:")
+#     print(current_state.values["summary"])
+
+#     print("\nConfidence:")
+#     print(current_state.values["confidence"])
+
+#     print("\nSuggested Response:")
+#     print(current_state.values["response"])
+
+#     # GET HUMAN DECISION
+#     human_decision = input(
+#         "\nEnter decision (approve/reject/edit): "
+#     ).strip().lower()
+
+
+#     while human_decision not in [
+#         "approve",
+#         "reject",
+#         "edit"
+#     ]:
+
+#         print("\nInvalid decision.")
+
+#         human_decision = input(
+#             "Enter approve, reject, or edit: "
+#         ).strip().lower()
+
+#     # RESUME GRAPH
+#     try:
+#         result = graph.invoke(
+#             Command(
+#                 resume=human_decision
+#             ),
+#             config=config
+#         )
+#     except Exception as e:
+#         print("         RESUME ERROR")
+#         print(e)
+#         raise
+
+# # FINAL RESULT
+# print("          FINAL RESULT")
+
+# print(f"\nCategory   : {result['category']}")
+# print(f"Urgency    : {result['urgency']}")
+# print(f"Language   : {result['language']}")
+# print(f"Confidence : {result['confidence']}")
+
+# print("\nSummary:")
+# print(result["summary"])
+
+# print("\nResponse:")
+# print(result["response"])
+
+# if result.get("human_decision"):
+
+#     print("\nHuman Decision:")
+#     print(result["human_decision"])
+
+# print("          GRAPH COMPLETE")
