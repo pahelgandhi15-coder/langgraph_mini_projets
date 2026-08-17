@@ -9,10 +9,6 @@ from graph.state import ResearchState
 from graph.schemas import QueryDecomposition, Finding, ResearchEvaluation, ResearchReport
 
 
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -24,10 +20,7 @@ if not GROQ_API_KEY:
 if not TAVILY_API_KEY:
     raise ValueError("TAVILY_API_KEY is missing from .env")
 
-
-# ============================================================
 # LLM
-# ============================================================
 
 llm = ChatGroq(
     model="openai/gpt-oss-20b",
@@ -35,10 +28,7 @@ llm = ChatGroq(
 )
 
 
-# ============================================================
 # STRUCTURED OUTPUT
-# ============================================================
-
 structured_llm = llm.with_structured_output(
     QueryDecomposition,
     method="json_mode"
@@ -54,21 +44,13 @@ evaluation_llm = llm.with_structured_output(
     method="json_mode"
 )
 
-#report_llm = llm.with_structured_output(
-#    ResearchReport
-#)
-# ============================================================
-# TAVILY
-# ============================================================
 
+# TAVILY
 tavily_client = TavilyClient(
     api_key=TAVILY_API_KEY
 )
 
-
-# ============================================================
-# NODE 1 — DECOMPOSE RESEARCH QUESTION
-# ============================================================
+# DECOMPOSE RESEARCH QUESTION
 
 def decompose_node(state: ResearchState):
 
@@ -120,11 +102,7 @@ Rules:
         "sub_questions": result.sub_questions
     }
 
-
-# ============================================================
-# NODE 2 — RESEARCH
-# ============================================================
-
+#  RESEARCH
 def research_node(state: ResearchState):
 
     research_round = state.get("research_round", 0) + 1
@@ -447,10 +425,7 @@ def route_after_evaluation(state: ResearchState):
     return "needs_research"
 
 
-# ============================================================
 # DISPLAY FINDINGS
-# ============================================================
-
 def display_findings_node(state: ResearchState):
 
     findings = state.get("findings", [])
@@ -491,14 +466,8 @@ def display_findings_node(state: ResearchState):
     return {}
 
 
-# ============================================================
 # BUILD LANGGRAPH
-# ============================================================
-
 graph_builder = StateGraph(ResearchState)
-
-
-# Add nodes
 
 graph_builder.add_node(
     "decompose",
@@ -526,10 +495,7 @@ graph_builder.add_node(
 )
 
 
-# ============================================================
 # EDGES
-# ============================================================
-
 graph_builder.add_edge(
     START,
     "decompose"
@@ -558,17 +524,11 @@ graph_builder.add_edge(
     "synthesis",
     END
 )
-# ============================================================
-# COMPILE
-# ============================================================
 
+# COMPILE
 graph = graph_builder.compile()
 
-
-# ============================================================
 # INITIAL STATE
-# ============================================================
-
 initial_state = {
     "query": (
         "How do user satisfaction and engagement metrics vary "
@@ -589,11 +549,7 @@ initial_state = {
     "final_report": ""
 }
 
-
-# ============================================================
 # RUN GRAPH
-# ============================================================
-
 if __name__ == "__main__":
 
     result = graph.invoke(initial_state)
